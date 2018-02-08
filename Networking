@@ -1,0 +1,278 @@
+"""
+Networking for VRED 2018 and later.
+Sync Node Transformations and send remote precdure calls over TCP and UDP
+"""
+
+import os, sys
+import socket
+import timeit
+import threading
+from collections import deque
+
+home = os.path.expanduser("~")
+libs_dir = home + '/Autodesk/'
+sys.path.insert(0, os.path.abspath(libs_dir))
+
+import pyuv
+import msgpack
+
+
+# To be inserted into VRED code editor
+_editor_code = """
+
+### Networking Configuration
+selectVariantSet("VRTools_Networking")
+
+networking = Networking(ip = "127.0.0.1")
+
+print "Networking set up"
+
+net_update_key = vrKey(Key_U, AltButton)
+net_update_key.connect(networking.update_synced)
+
+net_connect_key = vrKey(Key_C, AltButton)
+net_connect_key.connect(networking.connect)
+
+"""
+
+# OSB file to load on code injection. Not used in networking
+_file = None
+
+class Networking():
+
+    def __init__(self, ip, tcp_port = 40305, udp_port = 40306, send_rate = 5, heartbeat_rate = 1):
+
+        # How often to sync transformations, in "every send_rate seconds". Defaults to every 100ms
+        self.send_rate = send_rate
+        self.send_timer = vrTimer(self.send_rate)
+        self.send_timer.connect(self.send_synced)
+
+        self.heartbeat_rate = heartbeat_rate
+        self.heartbeat_timer = vrTimer(self.heartbeat_rate)
+        self.heartbeat_timer.connect(self.send_heartbeat)
+
+        # Tags by which to identify nodes to sync. You probably shouldn't change these.
+        self.pos_tag = "_Network sync position"
+        self.rot_tag = "_Network sync rotation"
+        self.scale_tag = "_Network sync scale"
+        self.state_tag = "_Network sync active state"
+        addNodeTags(getRootNode(), [self.pos_tag, self.rot_tag, self.scale_tag, self.state_tag])
+        
+        # Updated and used by find_networked_objects(). Is used to identify nodes across the network
+        # Uses ints instead of random strings (eg UUID) to avoid network overhead
+        self.highest_net_id = 0
+        
+        # Maps network ID to node, what to sync, last value, seq counter
+        self.synchronized = self.find_networked_objects()
+
+        self.loop = pyuv.Loop.default_loop()
+        self.uv_thread = threading.Thread(target=self.run_uv_loop)
+        self.udp = pyuv.UDP(self.loop)
+        self.tcp = pyuv.TCP(self.loop)
+        
+        # Server address
+        self.udp_addr = socket.getaddrinfo(ip, udp_port)[0][4]
+        self.tcp_addr = socket.getaddrinfo(ip, tcp_port)[0][4]
+        
+        self.ping_times = deque(maxlen = 5)
+
+     
+    def run_uv_loop(self):
+        """ Runs the uv loop. """
+        print "Running background UV thread"
+        self.loop.run()
+
+
+    def update_synced(self):
+        self.synchronized = self.find_networked_objects()
+
+
+    def connect(self):
+        self.udp.bind(("0.0.0.0", 0))
+        self.udp.start_recv(self.udp_recv)
+        print "UDP bound to " + str(self.udp.getsockname())
+
+        self.send_timer.setActive(True)
+        self.heartbeat_timer.setActive(True)
+
+        self.uv_thread.start()
+
+
+    def shutdown(self):
+        self.udp.close()
+
+        self.loop_timer.setActive(False)
+        self.send_timer.setActive(False)
+        self.heartbeat_timer.setActive(False)
+
+
+
+    def find_networked_objects(self):
+        """ Create the map of ojects to sync. Needed after loading or adding objects to sync """
+        # TODO: This does not handle duplicate network ids (Created for example by duplicating networked nodes)
+
+        sync_map = {}
+
+        # Need to find highest Network ID first, so we can later add more valid ids to node which don't have one already
+        sync_position = getNodesWithTag(self.pos_tag)
+        sync_rotation = getNodesWithTag(self.rot_tag)
+        sync_scale = getNodesWithTag(self.scale_tag)
+        sync_state = getNodesWithTag(self.state_tag)
+
+        # This assumes no other scripts use Value Pairs. Could be improved?
+        for node in sync_position + sync_rotation + sync_scale + sync_state:
+            if node.hasAttachment("ValuePair"):
+                net_id = vrFieldAccess(node.getAttachment("ValuePair")).getMString("value")[0]
+                self.highest_net_id = max(self.highest_net_id, int(net_id))
+                
+        for node in sync_position + sync_rotation + sync_scale + sync_state:
+            node_data = {"node": node}
+
+            node_data["sync_position"] = hasNodeTag(node, self.pos_tag)
+            node_data["sync_position_last"] = node.getTranslation()
+            node_data["sync_position_seq"] = 0
+
+            node_data["sync_rotation"] = hasNodeTag(node, self.rot_tag)
+            node_data["sync_rotation_last"] = node.getRotation()
+            node_data["sync_rotation_seq"] = 0
+
+            node_data["sync_scale"] = hasNodeTag(node, self.scale_tag)
+            node_data["sync_scale_last"] = node.getScale()
+            node_data["sync_scale_seq"] = 0
+
+            node_data["sync_state"] = hasNodeTag(node, self.state_tag)
+            node_data["sync_state_last"] = node.getActive()
+            node_data["sync_state_seq"] = 0
+
+            if node.hasAttachment("ValuePair"):
+                net_id = vrFieldAccess(node.getAttachment("ValuePair")).getMString("value")[0]
+            else:
+                self.highest_net_id += 1
+                net_id = self.highest_net_id
+                attachment = createAttachment("ValuePair")
+                vrFieldAccess(attachment).setMString("value", [str(net_id)])
+                node.addAttachment(attachment)
+
+            sync_map[net_id] = node_data
+
+        print "Node sync update complete"
+        return sync_map
+
+
+    def udp_recv(self, handle, ip_port, flags, data, error):
+        """ Receive udp packet """
+        if data != None:
+            try:
+                self.recv(msgpack.unpackb(data, use_list=False))
+            except Exception as e:
+                print "Receiving UDP message failed!"
+                print e
+
+
+    def recv(self, message):
+        """ Handle different types of messages """
+        print "Received message " + str(message)
+        if message[0] == "pong":
+            ping = timeit.default_timer() - message[1]
+            self.ping_times.append(ping)
+            avg = sum(self.ping_times) / len(self.ping_times)
+            print "Current ping: {:.2f}, avg: {:.2f}".format(ping*1000, avg*1000)
+
+        elif message[0] == "pos":
+            print message
+
+        elif message[0] == "rot":
+            print message
+
+        elif message[0] == "scale":
+            print message
+
+        elif message[0] == "state":
+            print message
+
+        elif message[0] == "rpc":
+            print message
+
+        else:
+            print "Unknown message type " + message[0]
+
+
+    def send_heartbeat(self):
+        """ Send heartbeat packet to server. Include current time to measure rount trip time """
+        if not self.udp:
+            return
+        self.udp.send(self.udp_addr, msgpack.packb((("ping"), timeit.default_timer())))
+
+
+    def send_synced(self):
+        """ Pack and send data (Position/Rotation/Scale/ActiveState) from network synchronized nodes 
+            This uses data from nodes in self.synchronized.
+            Only data that has changed since last send will be transmitted.
+            Sends data from up to 10 nodes in a single UDP packet for best speed/compatability.
+
+            TODO: Could decouple this method from UDP, and instead send on a supplied channel
+        """
+        print "Sending sync positions"
+
+        pos_packs = []
+        rot_packs = []
+        scale_packs = []
+        state_packs = []
+
+        # TODO: This could be written more concisely...
+        for net_id, data in self.synchronized.items():
+            if data["sync_position"]:
+                pos = data["node"].getTranslation()
+                if data["sync_position_last"] != pos:
+                    data["sync_position_last"] = pos
+                    seq = data["sync_position_seq"] + 1
+                    data["sync_position_seq"] = seq
+                    pos_packs.append((net_id, seq, pos))
+
+            if data["sync_rotation"]:
+                rot = data["node"].getRotation()
+                if data["sync_rotation_last"] != rot:
+                    data["sync_rotation_last"] = rot
+                    seq = data["sync_rotation_seq"] + 1
+                    data["sync_rotation_seq"] = seq
+                    rot_packs.append((net_id, seq, rot))
+
+            if data["sync_scale"]:
+                scale = data["node"].getScale()
+                if data["sync_scale_last"] != scale:
+                    data["sync_scale_last"] = scale
+                    seq = data["sync_rotation_seq"] + 1
+                    data["sync_rotation_seq"] = seq
+                    scale_packs.append((net_id, seq, scale))
+
+            if data["sync_state"]:
+                state = data["node"].getActive()
+                if data["sync_state_last"] != state:
+                    data["sync_state_last"] = state
+                    seq = data["sync_state_seq"] + 1
+                    data["sync_state_seq"] = seq
+                    state_packs.append((net_id, seq, state))
+
+
+        # Send data packs in chunks of 10. This results in a packet of roughly 350 bytes,
+        # which should not be fragmented or otherwise delayed on the wire.
+        # These data chucks are not well compressible, so no additional compression is used
+        # TODO: Quite some useless slicing and packing in here. Measure execution time / optimize? (50 nodes position ~0.3ms)
+        before = timeit.default_timer()
+        for i in range(0, max(len(pos_packs), len(rot_packs), len(scale_packs), len(state_packs)), 10):
+            pospack = ("pos", pos_packs[i:i+10])
+            rotpack = ("rot", rot_packs[i:i+10])
+            scalepack = ("scale", scale_packs[i:i+10])
+            statepack = ("state", state_packs[i:i+10])
+            
+            for pack in (pospack, rotpack, scalepack, statepack):
+                if len(pack[1]) > 0:
+                    self.udp.send(self.udp_addr, msgpack.packb(pack))
+                    
+
+    def receive_synced(self):
+        pass
+
+
+    def send_rpc(self):
+        pass
