@@ -5,6 +5,7 @@ import timeit
 import pyuv
 import msgpack
 import signal
+import logging
 
 # TODO: argparse ports and ip
 
@@ -29,8 +30,15 @@ def tcp_read(client, data, error):
         # TODO: Also remove this clients UDP connection
         return
 
-    print(f"Got TCP data {data} from {client.getpeername()}")
-    answer = parse(data)
+    logging.debug(f"Got TCP data {data} from {client.getpeername()}")
+
+    try:
+        answer = parse(data)
+    except Exception as e:
+        # TODO: Less broad exception
+        logging.error(f"Parsing message failed with {e}")
+        return
+
     if answer["distribute"]:
         for c in tcp_connections:
             if c != client:
@@ -60,14 +68,14 @@ def udp_read(handle, ip_port, flags, data, error):
     Also put every connection in a dict, so we know who to send sync packs to.
     """
     if data is not None:
-        print(f"Got UDP data {data} from {ip_port}")
+        logging.debug(f"Got UDP data {data} from {ip_port}")
         udp_connections[ip_port] = timeit.default_timer()
 
         try:
             answer = parse(data)
         except Exception as e:
             # TODO: Less broad exception
-            print(f"Parsing message failed with {e}")
+            logging.error(f"Parsing message failed with {e}")
             return
 
         if answer["distribute"]:
@@ -90,19 +98,20 @@ def parse(data):
                  also add to initial state map if newest for its node
     """
     message = msgpack.unpackb(data, use_list = False)
-    print(f"Message: {message}")
+    logging.debug(f"Parsed message: {message}")
     msg_type = message[0]
     if msg_type == "hey":
         answer = {"distribute": False, "data": ("ho", last_state)}
     elif msg_type == "rpc":
         answer = {"distribute": True, "data": data}
     elif msg_type == "ping":
-        answer = {"distribute": False, "data": data}
+        message[1] = "pong"
+        answer = {"distribute": False, "data": msgpack.packb(message)}
     elif msg_type == "pos" or msg_type == "rot" or msg_type == "scale" or msg_type == "state":
         answer = {"distribute": True, "data": data}
         save_state(message)
     else:
-        print(f"Unknown message type {message[0]}")
+        logging.warning(f"Unknown message type {message[0]}")
         raise LookupError
 
     return answer
@@ -121,23 +130,26 @@ def save_state(message):
 
 def check_udp(timer):
     """ Check all recent udp connections, remove if dead """
-    print("Checking UDP connections...")
+    logging.debug("Checking UDP connections...")
     now = timeit.default_timer()
     for ip_port, time in list(udp_connections.items()):
         if now - time > UDP_TIMEOUT:
-            print(f"{ip_port} for {now - time}s over timeout ({UDP_TIMEOUT})")
+            logging.warning(f"{ip_port} for {now - time}s over timeout ({UDP_TIMEOUT})")
             del(udp_connections[ip_port])
 
 
 def signal_cb(handle, signum):
     """ Handle shutdown signals for graceful shutdown """
-    print("Shutting things down")
+    logging.debug("Shutting things down")
     [c.close() for c in tcp_connections]
     handle.close()
     tcp.close()
     udp.close()
     loop.stop()
+    logging.info("Shutdown complete")
 
+
+logging.basicConfig(format='%(asctime)s %(levelname)s: %(message)s', level=logging.DEBUG)
 
 tcp_connections = []
 udp_connections = {}
@@ -164,5 +176,5 @@ signal_handle.start(signal_cb, signal.SIGINT)
 heartbeat_timer = pyuv.Timer(loop)
 heartbeat_timer.start(check_udp, 1, 1)
 
-print("Server startup complete")
+logging.info("Server startup complete")
 loop.run()
