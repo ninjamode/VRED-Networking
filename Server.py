@@ -27,6 +27,7 @@ KEEP_STATE = True
 def tcp_read(client, data, error):
     # No data means the client has closed the connection
     if data is None:
+        logging.info(f"{client.getpeername()} disconnected")
         close_tcp(client)
         # TODO: Also remove this clients UDP connection
         return
@@ -59,6 +60,7 @@ def tcp_connect(server, error):
     tcp_connections.append(client)
     client.start_read(tcp_read)
     client.nodelay(True)
+    logging.info(f"{client.getpeername()} connected")
 
 
 ##### UDP Stuff #####
