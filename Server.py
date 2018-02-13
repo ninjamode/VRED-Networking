@@ -1,6 +1,7 @@
 """
 Server application for VRED-Networking
 """
+
 import timeit
 import pyuv
 import msgpack
@@ -97,22 +98,21 @@ def parse(data):
     Sync Pack -> Send to all udp connections
                  also add to initial state map if newest for its node
     """
-    message = msgpack.unpackb(data, use_list = False)
+    message = msgpack.unpackb(data, use_list = True, raw = False)
     logging.debug(f"Parsed message: {message}")
     msg_type = message[0]
     if msg_type == "hey":
-        answer = {"distribute": False, "data": ("ho", last_state)}
+        answer = {"distribute": False, "data": msgpack.packb(("ho", last_state))}
     elif msg_type == "rpc":
         answer = {"distribute": True, "data": data}
     elif msg_type == "ping":
-        message[1] = "pong"
+        message[0] = "pong"
         answer = {"distribute": False, "data": msgpack.packb(message)}
     elif msg_type == "pos" or msg_type == "rot" or msg_type == "scale" or msg_type == "state":
         answer = {"distribute": True, "data": data}
         save_state(message)
     else:
-        logging.warning(f"Unknown message type {message[0]}")
-        raise LookupError
+        raise LookupError(f"Unknown message type {message[0]}")
 
     return answer
 
@@ -130,7 +130,6 @@ def save_state(message):
 
 def check_udp(timer):
     """ Check all recent udp connections, remove if dead """
-    logging.debug("Checking UDP connections...")
     now = timeit.default_timer()
     for ip_port, time in list(udp_connections.items()):
         if now - time > UDP_TIMEOUT:

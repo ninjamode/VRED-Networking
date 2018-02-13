@@ -1,5 +1,18 @@
 import pyuv
 import msgpack
+import signal
+
+
+def on_read(handle, ip_port, flags, data, error):
+    if data is not None:
+        print(msgpack.unpackb(data))
+
+def signal_cb(handle, signum):
+    udp.close()
+    handle.close()
+
+port = 40306
+#port = 58849
 
 v1 = (1,2,1)
 v2 = (2,3,2)
@@ -36,8 +49,16 @@ state_msg = ("rot", [
 
 
 udp = pyuv.UDP(pyuv.Loop.default_loop())
+udp.start_recv(on_read)
 
-udp.send(("127.0.0.1", 40306), msgpack.packb(pos_msg))
-udp.send(("127.0.0.1", 40306), msgpack.packb(rot_msg))
-udp.send(("127.0.0.1", 40306), msgpack.packb(scale_msg))
-udp.send(("127.0.0.1", 40306), msgpack.packb(state_msg))
+signal_handle = pyuv.Signal(pyuv.Loop.default_loop())
+signal_handle.start(signal_cb, signal.SIGINT)
+
+#udp.send(("127.0.0.1", port), msgpack.packb(pos_msg))
+#udp.send(("127.0.0.1", port), msgpack.packb(rot_msg))
+#udp.send(("127.0.0.1", port), msgpack.packb(scale_msg))
+#udp.send(("127.0.0.1", port), msgpack.packb(state_msg))
+
+udp.send(("127.0.0.1", port), msgpack.packb(["hey"]))
+
+pyuv.Loop.default_loop().run()
