@@ -40,8 +40,7 @@ _file = None
 
 class Networking():
 
-    def __init__(self, ip, tcp_port = 40305, udp_port = 40306, send_rate = 5, heartbeat_rate = 1):
-
+    def __init__(self, ip, tcp_port = 40305, udp_port = 40306, send_rate = 0.1, heartbeat_rate = 2):
         # How often to sync transformations, in "every send_rate seconds". Defaults to every 100ms
         self.send_rate = send_rate
         self.send_timer = vrTimer(self.send_rate)
@@ -69,11 +68,14 @@ class Networking():
         self.uv_thread = threading.Thread(target=self.run_uv_loop)
         self.udp = pyuv.UDP(self.loop)
         self.tcp = pyuv.TCP(self.loop)
+        self.tcp.nodelay(True)
+        self.connected = False
         
         # Server address
         self.udp_addr = socket.getaddrinfo(ip, udp_port)[0][4]
         self.tcp_addr = socket.getaddrinfo(ip, tcp_port)[0][4]
         
+        # maxlen denotes the number of ping timings used to calculate the average
         self.ping_times = deque(maxlen = 5)
 
      
@@ -88,27 +90,62 @@ class Networking():
 
 
     def connect(self):
-        self.udp.bind(("0.0.0.0", 0))
-        self.udp.start_recv(self.udp_recv)
-        print "UDP bound to " + str(self.udp.getsockname())
+        if self.connected:
+            print "Already connected"
+            return
 
-        self.send_timer.setActive(True)
-        self.heartbeat_timer.setActive(True)
+        try:
+            self.udp.bind(("0.0.0.0", 0))
+            self.udp.start_recv(self.udp_recv)
+            print "UDP bound to " + str(self.udp.getsockname())
 
-        self.uv_thread.start()
+            self.tcp.bind(("0.0.0.0", 0))
+            self.tcp.connect(self.tcp_addr, self.on_tcp_connect)
+
+            self.send_timer.setActive(True)
+            self.heartbeat_timer.setActive(True)
+
+            self.uv_thread.start()
+            self.connected = True
+        except Exception as e:
+            raise e
+
+
+    def on_tcp_connect(self, handle, error):
+        if error is None:
+            handle.start_read(self.tcp_recv)
 
 
     def shutdown(self):
         self.udp.close()
+        self.tcp.close()
 
-        self.loop_timer.setActive(False)
         self.send_timer.setActive(False)
         self.heartbeat_timer.setActive(False)
 
+        self.connected = False
+
+
+    def reset_net_ids(self):
+        """ Reset all net ids and start counting from zero again """
+        sync_position = getNodesWithTag(self.pos_tag)
+        sync_rotation = getNodesWithTag(self.rot_tag)
+        sync_scale = getNodesWithTag(self.scale_tag)
+        sync_state = getNodesWithTag(self.state_tag)
+        for node in sync_position + sync_rotation + sync_scale + sync_state:
+            if node.hasAttachment("ValuePair"):
+                node.subAttachment(node.getAttachment("ValuePair"))
+        self.highest_net_id = 0
+        self.synchronized = self.find_networked_objects()
 
 
     def find_networked_objects(self):
-        """ Create the map of ojects to sync. Needed after loading or adding objects to sync """
+        """ Create the map of ojects to sync. Needed after loading or adding objects to sync
+
+        Returns a structure which maps network ids to an dict with node pointer plus
+        should sync (boolean), sequence number and last value for
+        position, scale, rotation and active state.
+        """
         # TODO: This does not handle duplicate network ids (Created for example by duplicating networked nodes)
 
         sync_map = {}
@@ -128,24 +165,24 @@ class Networking():
         for node in sync_position + sync_rotation + sync_scale + sync_state:
             node_data = {"node": node}
 
-            node_data["sync_position"] = hasNodeTag(node, self.pos_tag)
-            node_data["sync_position_last"] = node.getTranslation()
-            node_data["sync_position_seq"] = 0
+            node_data["pos"] = hasNodeTag(node, self.pos_tag)
+            node_data["pos_last"] = node.getTranslation()
+            node_data["pos_seq"] = 0
 
-            node_data["sync_rotation"] = hasNodeTag(node, self.rot_tag)
-            node_data["sync_rotation_last"] = node.getRotation()
-            node_data["sync_rotation_seq"] = 0
+            node_data["rot"] = hasNodeTag(node, self.rot_tag)
+            node_data["rot_last"] = node.getRotation()
+            node_data["rot_seq"] = 0
 
-            node_data["sync_scale"] = hasNodeTag(node, self.scale_tag)
-            node_data["sync_scale_last"] = node.getScale()
-            node_data["sync_scale_seq"] = 0
+            node_data["scale"] = hasNodeTag(node, self.scale_tag)
+            node_data["scale_last"] = node.getScale()
+            node_data["scale_seq"] = 0
 
-            node_data["sync_state"] = hasNodeTag(node, self.state_tag)
-            node_data["sync_state_last"] = node.getActive()
-            node_data["sync_state_seq"] = 0
+            node_data["state"] = hasNodeTag(node, self.state_tag)
+            node_data["state_last"] = node.getActive()
+            node_data["state_seq"] = 0
 
             if node.hasAttachment("ValuePair"):
-                net_id = vrFieldAccess(node.getAttachment("ValuePair")).getMString("value")[0]
+                net_id = int(vrFieldAccess(node.getAttachment("ValuePair")).getMString("value")[0])
             else:
                 self.highest_net_id += 1
                 net_id = self.highest_net_id
@@ -161,7 +198,7 @@ class Networking():
 
     def udp_recv(self, handle, ip_port, flags, data, error):
         """ Receive udp packet """
-        if data != None:
+        if data is not None:
             try:
                 self.recv(msgpack.unpackb(data, use_list=False))
             except Exception as e:
@@ -169,26 +206,45 @@ class Networking():
                 print e
 
 
+    def tcp_recv(self, tcp_handle, data, error):
+        if data is None:
+            tcp.handle.close()
+            return
+
+        print "Got tcp data", data
+
+
     def recv(self, message):
         """ Handle different types of messages """
-        print "Received message " + str(message)
-        if message[0] == "pong":
+        print "Received message", message
+        tpe = message[0]
+        if tpe == "pong":
             ping = timeit.default_timer() - message[1]
             self.ping_times.append(ping)
             avg = sum(self.ping_times) / len(self.ping_times)
             print "Current ping: {:.2f}, avg: {:.2f}".format(ping*1000, avg*1000)
 
-        elif message[0] == "pos":
-            print message
+        elif tpe == "pos" or tpe == "rot" or tpe == "scale" or tpe == "state":
+            for pack in message[1]:
+                net_id = pack[0]
+                if not net_id in self.synchronized:
+                    print "Unknown network ID {} found!".format(net_id)
+                    return
 
-        elif message[0] == "rot":
-            print message
+                seq = pack[1]
+                id_data = self.synchronized[net_id]
+                if id_data[tpe + "_seq"] < seq:
+                    node = id_data["node"]
+                    data = pack[2]
+                    if tpe == "pos":
+                        node.setTranslation(*data)
+                    elif tpe == "rot":
+                        node.setRotation(*data)
+                    elif tpe == "scale":
+                        node.setScale(*data)
+                    else:
+                        node.setActive(data)
 
-        elif message[0] == "scale":
-            print message
-
-        elif message[0] == "state":
-            print message
 
         elif message[0] == "rpc":
             print message
@@ -201,7 +257,7 @@ class Networking():
         """ Send heartbeat packet to server. Include current time to measure rount trip time """
         if not self.udp:
             return
-        self.udp.send(self.udp_addr, msgpack.packb((("ping"), timeit.default_timer())))
+        self.udp.send(self.udp_addr, msgpack.packb(("ping", timeit.default_timer())))
 
 
     def send_synced(self):
@@ -212,8 +268,6 @@ class Networking():
 
             TODO: Could decouple this method from UDP, and instead send on a supplied channel
         """
-        print "Sending sync positions"
-
         pos_packs = []
         rot_packs = []
         scale_packs = []
@@ -221,36 +275,36 @@ class Networking():
 
         # TODO: This could be written more concisely...
         for net_id, data in self.synchronized.items():
-            if data["sync_position"]:
+            if data["pos"]:
                 pos = data["node"].getTranslation()
-                if data["sync_position_last"] != pos:
-                    data["sync_position_last"] = pos
-                    seq = data["sync_position_seq"] + 1
-                    data["sync_position_seq"] = seq
+                if data["pos_last"] != pos:
+                    data["pos_last"] = pos
+                    seq = data["pos_seq"] + 1
+                    data["pos_seq"] = seq
                     pos_packs.append((net_id, seq, pos))
 
-            if data["sync_rotation"]:
+            if data["rot"]:
                 rot = data["node"].getRotation()
-                if data["sync_rotation_last"] != rot:
-                    data["sync_rotation_last"] = rot
-                    seq = data["sync_rotation_seq"] + 1
-                    data["sync_rotation_seq"] = seq
+                if data["rot_last"] != rot:
+                    data["rot_last"] = rot
+                    seq = data["rot_seq"] + 1
+                    data["rot_seq"] = seq
                     rot_packs.append((net_id, seq, rot))
 
-            if data["sync_scale"]:
+            if data["scale"]:
                 scale = data["node"].getScale()
-                if data["sync_scale_last"] != scale:
-                    data["sync_scale_last"] = scale
-                    seq = data["sync_rotation_seq"] + 1
-                    data["sync_rotation_seq"] = seq
+                if data["scale_last"] != scale:
+                    data["scale_last"] = scale
+                    seq = data["scale_seq"] + 1
+                    data["scale_seq"] = seq
                     scale_packs.append((net_id, seq, scale))
 
-            if data["sync_state"]:
+            if data["state"]:
                 state = data["node"].getActive()
-                if data["sync_state_last"] != state:
-                    data["sync_state_last"] = state
-                    seq = data["sync_state_seq"] + 1
-                    data["sync_state_seq"] = seq
+                if data["state_last"] != state:
+                    data["state_last"] = state
+                    seq = data["state_seq"] + 1
+                    data["state_seq"] = seq
                     state_packs.append((net_id, seq, state))
 
 
@@ -269,10 +323,3 @@ class Networking():
                 if len(pack[1]) > 0:
                     self.udp.send(self.udp_addr, msgpack.packb(pack))
                     
-
-    def receive_synced(self):
-        pass
-
-
-    def send_rpc(self):
-        pass
