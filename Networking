@@ -7,10 +7,10 @@ import os, sys
 import socket
 import timeit
 import threading
+import ConfigParser
 from collections import deque
 
-home = os.path.expanduser("~")
-libs_dir = home + '/Autodesk/'
+libs_dir = os.path.expanduser("~/Autodesk/")
 sys.path.insert(0, os.path.abspath(libs_dir))
 
 import pyuv
@@ -23,7 +23,7 @@ _editor_code = """
 ### Networking Configuration
 selectVariantSet("VRTools_Networking")
 
-networking = Networking(ip = "127.0.0.1")
+networking = Networking()
 
 print "Networking set up"
 
@@ -40,7 +40,18 @@ _file = None
 
 class Networking():
 
-    def __init__(self, ip, tcp_port = 40305, udp_port = 40306, send_rate = 0.1, heartbeat_rate = 2):
+    def __init__(self, ip = None, tcp_port = 40305, udp_port = 40306, send_rate = 0.05, heartbeat_rate = 10, config_file = ""):
+        # Try getting settings from config file, might not be present
+        global libs_dir
+        self.config = ConfigParser.SafeConfigParser({'ip': "127.0.0.1", 'name':  "Unnamed", 'netid': 0, 'create_cam': False})
+        self.config.read([os.path.abspath(libs_dir + 'Networking.cfg'), os.path.abspath(libs_dir + config_file)])
+ 
+        if not ip:
+            try:
+                ip = self.config.get("Networking", "ip")
+            except ConfigParser.Error as e:
+                ip = "127.0.0.1"
+        
         # How often to sync transformations, in "every send_rate seconds". Defaults to every 100ms
         self.send_rate = send_rate
         self.send_timer = vrTimer(self.send_rate)
@@ -97,7 +108,6 @@ class Networking():
         try:
             self.udp.bind(("0.0.0.0", 0))
             self.udp.start_recv(self.udp_recv)
-            print "UDP bound to " + str(self.udp.getsockname())
 
             self.tcp.bind(("0.0.0.0", 0))
             self.tcp.connect(self.tcp_addr, self.on_tcp_connect)
@@ -107,6 +117,9 @@ class Networking():
 
             self.uv_thread.start()
             self.connected = True
+
+            # Establish connection to server and grab initial data
+            self.tcp.write(msgpack.packb(["hey"]) + "\n")
         except Exception as e:
             raise e
 
@@ -208,11 +221,17 @@ class Networking():
 
     def tcp_recv(self, tcp_handle, data, error):
         if data is None:
-            tcp.handle.close()
+            tcp_handle.close()
             return
 
-        print "Got tcp data", data
-
+        split = data.split(b"\n")
+        for message in split:
+            if len(message) > 0:
+                try:
+                    self.recv(msgpack.unpackb(message, use_list=False))
+                except Exception as e:
+                    print "Receiving TCP data failed!"
+                    print e
 
     def recv(self, message):
         """ Handle different types of messages """
@@ -226,38 +245,53 @@ class Networking():
 
         elif tpe == "pos" or tpe == "rot" or tpe == "scale" or tpe == "state":
             for pack in message[1]:
-                net_id = pack[0]
-                if not net_id in self.synchronized:
-                    print "Unknown network ID {} found!".format(net_id)
-                    return
-
-                seq = pack[1]
-                id_data = self.synchronized[net_id]
-                if id_data[tpe + "_seq"] < seq:
-                    node = id_data["node"]
-                    data = pack[2]
-                    if tpe == "pos":
-                        node.setTranslation(*data)
-                    elif tpe == "rot":
-                        node.setRotation(*data)
-                    elif tpe == "scale":
-                        node.setScale(*data)
-                    else:
-                        node.setActive(data)
-
+                self.apply_pack(tpe, pack[0], pack[1], pack[2])
 
         elif message[0] == "rpc":
-            print message
+            globals()[message[1]](*message[2])
+
+        elif message[0] == "ho":
+            print "Initial state", message
+            for tpe, pack in message[1].items():
+                for net_id, data in pack.items():
+                    self.apply_pack(tpe, net_id, data[0], data[1])
+
 
         else:
             print "Unknown message type " + message[0]
 
+
+    def apply_pack(self, tpe, net_id, seq, data):
+        """ Apply pack data from sync or initial state message """
+        if not net_id in self.synchronized:
+            print "Unknown network ID {} found!".format(net_id)
+            return
+        
+        id_data = self.synchronized[net_id]
+        if id_data[tpe + "_seq"] < seq:
+            id_data[tpe + "_seq"] = seq
+            node = id_data["node"]
+            if tpe == "pos":
+                node.setTranslation(*data)
+            elif tpe == "rot":
+                node.setRotation(*data)
+            elif tpe == "scale":
+                node.setScale(*data)
+            else:
+                node.setActive(data)
+        else:
+            print "Got old data: seq {}, current {}".format(seq, id_data[tpe + "_seq"])
 
     def send_heartbeat(self):
         """ Send heartbeat packet to server. Include current time to measure rount trip time """
         if not self.udp:
             return
         self.udp.send(self.udp_addr, msgpack.packb(("ping", timeit.default_timer())))
+
+
+    def rpc(self, fname, *args):
+        """ Need to make sure args only contains vars msgpack can pack for transmission """
+        self.tcp.write(msgpack.packb(("rpc", fname, args)) + "\n")
 
 
     def send_synced(self):
