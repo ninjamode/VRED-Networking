@@ -45,17 +45,44 @@ Usage is divided into two parts: Scene setup and actual networking.
 
 1. Add networking to your scene (from the toolbar menu item)
 2. Node synchronization is done via tags. Add the tag `_Networking Position Sync` (and/or the rotation/scale/state) variant to all nodes you want to synchronize.
-3. Press `ctrl + U` to update the networking plugin with your nodes. Remeber to always press this hotkey after you changed node tags! You can adjust this hotkey in the script editor.
+3. Press `alt + U` to update the networking plugin with your nodes. Remeber to always press this hotkey after you changed node tags! You can adjust this hotkey in the script editor.
 4. In the script editor, adjust the automatically added code so that the address points to your servers network address.
-5. Optional: RPC (still to do)
 
 ### Run a networked session
 
 0. Make sure all clients have the same version of the VRED scene file. Make sure all clients can reach the machine, on which the server application runs. Make sure the correct server address is entered in the Script Editor.
-1. Start Server.py with python3. You should start this first, otherwise initial state sync will not work properly.
+1. Start Server.py with python3. 
 2. Start VRED.
-3. Press the hotkey to connect. That's it!
+3. Press the hotkey `alt + c` to connect. That's it!
 
+## Adavanced Usage
+
+You can use remote procedure calls, short `rpc` to execute methods on other nodes. Use this to synchronize your python code acress connected devices. Call the `rpc` method on the networking object with the target method name as the first argument. Subsequent arguments will be transmitted and passed to the method on execution.
+
+```python
+
+# This will call the method "my_method" with arguments 1 and "two" on all OTHER machines
+net = Networking()
+net.rcp("my_method", 1, "two")
+
+def my_method(arg1, arg2):
+    print arg1, arg2
+
+```
+
+### Configuration
+
+Networking will try to read the file `Networking.cfg` at `~/Autodesk/` plus any file you supply to the `config_file` networking costructor parameter (also in the autodesk folder). Values from this per file config will override global values from `Networking.cfg`. Possible values:
+
+```
+[Networking]
+; This is an example config file
+ip = 127.0.0.1 ; Server ip
+name = Constantin ; Name of this machine
+spawn = None ; Spawn a camera for this machine on connection
+```
+
+This file uses Python ConfigParser (https://docs.python.org/2/library/configparser.html) syntx.
 
 ## Caveats
 
@@ -63,3 +90,10 @@ This is demo software, use at your own risk. Feel free to adapt the scripts to y
 Again, this does not include any security features at the moment. Make sure you run all components on trusted networks behind a firewall.
 Currently Windows only; Server is cross plattform. Might or might not work on Mac and Linux (pyuv and msgpack module is provided for these systems, you can try the official ones, but you might need to compile them yourself to ensure stable operation)
 Only tested with VRED 2018.4!
+
+## To Do
+
+- Performance could be improved, especially when packing data
+- (message) authentication
+- Interpolation between synced state
+- Strings that go over tcp (mainly rpc) can not contain \\n, as this is used to delimit msgpack messages. Could use something else here
