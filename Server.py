@@ -34,19 +34,23 @@ def tcp_read(client, data, error):
 
     logging.debug(f"Got TCP data {data} from {client.getpeername()}")
 
-    try:
-        answer = parse(data)
-    except Exception as e:
-        # TODO: Less broad exception
-        logging.error(f"Parsing message failed with {e}")
-        return
+    # Break at newlines
+    split = data.split(b"\n")
+    for message in split:
+        if len(message) > 0:
+            try:
+                answer = parse(message)
+            except Exception as e:
+                # TODO: Less broad exception
+                logging.error(f"Parsing message failed with {e}")
+                return
 
-    if answer["distribute"]:
-        for c in tcp_connections:
-            if c != client:
-                c.write(answer["data"])
-    else:
-        client.write(answer["data"])
+            if answer["distribute"]:
+                for c in tcp_connections:
+                    if c != client:
+                        c.write(answer["data"] + b"\n")
+            else:
+                client.write(answer["data"] + b"\n")
 
 
 def close_tcp(client):
