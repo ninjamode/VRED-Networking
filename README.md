@@ -97,3 +97,4 @@ Only tested with VRED 2018.4!
 - (message) authentication
 - Interpolation between synced state
 - Strings that go over tcp (mainly rpc) can not contain \\n, as this is used to delimit msgpack messages. Could use something else here
+- Could abstract communication channel more to easily implement other networking solution (pubsub etc.) 
