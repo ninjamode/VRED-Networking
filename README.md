@@ -37,6 +37,14 @@ Features:
 
 After you start VRED the next time, you will see an *Add Networking* button under the Toolkit menu entry. Press this button to add networking capabilities to your scene.  
 
+### Server setup
+
+The server (Server.py) requires Python 3 to run (tested with 3.6). The server can be run on a machine that also runs VRED, but it does not need to. It also requires the `msgpack` and `pyuv` packages (run this on a console):
+```
+pip3 install msgpack
+pip3 install pyuv
+```
+
 ## Usage
 
 Usage is divided into two parts: Scene setup and actual networking.
