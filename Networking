@@ -117,9 +117,6 @@ class Networking():
 
             self.uv_thread.start()
             self.connected = True
-
-            # Establish connection to server and grab initial data
-            self.tcp.write(msgpack.packb(["hey"]) + "\n")
         except Exception as e:
             raise e
 
@@ -127,6 +124,9 @@ class Networking():
     def on_tcp_connect(self, handle, error):
         if error is None:
             handle.start_read(self.tcp_recv)
+            
+            # Establish connection to server and grab initial data
+            self.tcp.write(msgpack.packb(["hey"]) + "\n")
 
 
     def shutdown(self):
