@@ -130,9 +130,16 @@ class Networking():
 
 
     def shutdown(self):
-        self.udp.close()
-        self.tcp.close()
+        try:
+            self.udp.close()
+        except Exception as e:
+            print e
 
+        try:
+            self.tcp.close()
+        except Exception as e:
+            print e
+        
         self.send_timer.setActive(False)
         self.heartbeat_timer.setActive(False)
 
@@ -235,7 +242,6 @@ class Networking():
 
     def recv(self, message):
         """ Handle different types of messages """
-        print "Received message", message
         tpe = message[0]
         if tpe == "pong":
             ping = timeit.default_timer() - message[1]
@@ -272,15 +278,19 @@ class Networking():
             id_data[tpe + "_seq"] = seq
             node = id_data["node"]
             if tpe == "pos":
-                node.setTranslation(*data)
+                node.setWorldTranslation(*data)
+                id_data["pos_last"] = list(data)
             elif tpe == "rot":
                 node.setRotation(*data)
+                id_data["rot_last"] = list(data)
             elif tpe == "scale":
                 node.setScale(*data)
+                id_data["scale_last"] = list(data)
             else:
                 node.setActive(data)
+                id_data["state_last"] = data
         else:
-            print "Got old data: seq {}, current {}".format(seq, id_data[tpe + "_seq"])
+            print "Got old data for {}: seq {}, current {}".format(id_data["node"].getName(), seq, id_data[tpe + "_seq"])
 
     def send_heartbeat(self):
         """ Send heartbeat packet to server. Include current time to measure rount trip time """
@@ -310,7 +320,7 @@ class Networking():
         # TODO: This could be written more concisely...
         for net_id, data in self.synchronized.items():
             if data["pos"]:
-                pos = data["node"].getTranslation()
+                pos = data["node"].getWorldTranslation()
                 if data["pos_last"] != pos:
                     data["pos_last"] = pos
                     seq = data["pos_seq"] + 1
