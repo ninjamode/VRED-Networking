@@ -8,6 +8,7 @@ import socket
 import timeit
 import threading
 import ConfigParser
+import json
 from collections import deque
 
 libs_dir = os.path.expanduser("~/Autodesk/")
@@ -43,14 +44,19 @@ class Networking():
     def __init__(self, ip = None, tcp_port = 40305, udp_port = 40306, send_rate = 0.05, heartbeat_rate = 10, config_file = ""):
         # Try getting settings from config file, might not be present
         global libs_dir
-        self.config = ConfigParser.SafeConfigParser({'ip': "127.0.0.1", 'name':  "Unnamed", 'netid': 0, 'create_cam': False})
+        self.config = ConfigParser.SafeConfigParser({'ip': "127.0.0.1", 'name':  "Unnamed", 'netid': '0', 'create_cam': 'False', 'passive': 'False', 'passive_nodes': "[]"})
         self.config.read([os.path.abspath(libs_dir + 'Networking.cfg'), os.path.abspath(libs_dir + config_file)])
  
+        if not "Networking" in self.config.sections():
+            self.config.add_section("Networking")
+        
+        print "Config", self.config.items("Networking")
+
         if not ip:
-            try:
-                ip = self.config.get("Networking", "ip")
-            except ConfigParser.Error as e:
-                ip = "127.0.0.1"
+            ip = self.config.get("Networking", "ip")
+
+        self.passive = self.config.getboolean("Networking", "passive")
+        self.passive_nodes = json.loads(self.config.get("Networking", "passive_nodes"))
         
         # How often to sync transformations, in "every send_rate seconds". Defaults to every 100ms
         self.send_rate = send_rate
@@ -112,7 +118,8 @@ class Networking():
             self.tcp.bind(("0.0.0.0", 0))
             self.tcp.connect(self.tcp_addr, self.on_tcp_connect)
 
-            self.send_timer.setActive(True)
+            if not self.passive:
+                self.send_timer.setActive(True)
             self.heartbeat_timer.setActive(True)
 
             self.uv_thread.start()
