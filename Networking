@@ -95,6 +95,9 @@ class Networking():
         # maxlen denotes the number of ping timings used to calculate the average
         self.ping_times = deque(maxlen = 5)
 
+        # UnCam support
+        self.uncam = UnCamera()
+
      
     def run_uv_loop(self):
         """ Runs the uv loop. """
@@ -285,7 +288,7 @@ class Networking():
             id_data[tpe + "_seq"] = seq
             node = id_data["node"]
             if tpe == "pos":
-                node.setWorldTranslation(*data)
+                node.setTranslation(*data)
                 id_data["pos_last"] = list(data)
             elif tpe == "rot":
                 node.setRotation(*data)
@@ -326,8 +329,11 @@ class Networking():
 
         # TODO: This could be written more concisely...
         for net_id, data in self.synchronized.items():
+            if data["node"].getName() in self.passive_nodes:
+                continue
+
             if data["pos"]:
-                pos = data["node"].getWorldTranslation()
+                pos = data["node"].getTranslation()
                 if data["pos_last"] != pos:
                     data["pos_last"] = pos
                     seq = data["pos_seq"] + 1
@@ -374,3 +380,42 @@ class Networking():
                 if len(pack[1]) > 0:
                     self.udp.send(self.udp_addr, msgpack.packb(pack))
                     
+
+class UnCamera():
+
+    def __init__(self, root = "UnCam root"):
+        self.root = findNode(root)
+        if not self.root.isValid():
+            self.root = createNode("Group", root)
+
+        self.nodes = {}
+        self.timer = vrTimer()
+        self.timer.connect(self.copy)
+        self.timer.setActive(True)
+
+
+    def uncam(self, node):
+        parent = node.getParent()
+        proxy = createNode("Group", node.getName() + "_proxy")
+        parent.addChild(proxy)
+        self.root.addChild(node)
+        self.add(proxy, node)
+        print "Copy this to the script editor: \nnetworking.uncam.add(findNode('{}'), findNode('{}'))".format(proxy.getName(), node.getName()) 
+
+
+    def add(self, fromnode, tonode):
+        self.nodes[fromnode] = tonode
+
+
+    def copy(self):
+        for fn, tn in self.nodes.items():
+            pos = fn.getWorldTranslation()
+            rot = fn.getWorldRotation()
+            scale = fn. getWorldScale()
+            state = fn.getActive()
+            tn.setTranslation(*pos)
+            tn.setRotation(*rot)
+            tn.setScale(*scale)
+            tn.setActive(state)
+
+
