@@ -95,9 +95,6 @@ class Networking():
         # maxlen denotes the number of ping timings used to calculate the average
         self.ping_times = deque(maxlen = 5)
 
-        # UnCam support
-        self.uncam = UnCamera()
-
      
     def run_uv_loop(self):
         """ Runs the uv loop. """
@@ -282,7 +279,7 @@ class Networking():
         if not net_id in self.synchronized:
             print "Unknown network ID {} found!".format(net_id)
             return
-        
+
         id_data = self.synchronized[net_id]
         if id_data[tpe + "_seq"] < seq:
             id_data[tpe + "_seq"] = seq
@@ -379,43 +376,5 @@ class Networking():
             for pack in (pospack, rotpack, scalepack, statepack):
                 if len(pack[1]) > 0:
                     self.udp.send(self.udp_addr, msgpack.packb(pack))
-                    
-
-class UnCamera():
-
-    def __init__(self, root = "UnCam root"):
-        self.root = findNode(root)
-        if not self.root.isValid():
-            self.root = createNode("Group", root)
-
-        self.nodes = {}
-        self.timer = vrTimer()
-        self.timer.connect(self.copy)
-        self.timer.setActive(True)
-
-
-    def uncam(self, node):
-        parent = node.getParent()
-        proxy = createNode("Group", node.getName() + "_proxy")
-        parent.addChild(proxy)
-        self.root.addChild(node)
-        self.add(proxy, node)
-        print "Copy this to the script editor: \nnetworking.uncam.add(findNode('{}'), findNode('{}'))".format(proxy.getName(), node.getName()) 
-
-
-    def add(self, fromnode, tonode):
-        self.nodes[fromnode] = tonode
-
-
-    def copy(self):
-        for fn, tn in self.nodes.items():
-            pos = fn.getWorldTranslation()
-            rot = fn.getWorldRotation()
-            scale = fn. getWorldScale()
-            state = fn.getActive()
-            tn.setTranslation(*pos)
-            tn.setRotation(*rot)
-            tn.setScale(*scale)
-            tn.setActive(state)
 
 
