@@ -123,7 +123,6 @@ class Networking():
             self.heartbeat_timer.setActive(True)
 
             self.uv_thread.start()
-            self.connected = True
         except Exception as e:
             raise e
 
@@ -131,6 +130,7 @@ class Networking():
     def on_tcp_connect(self, handle, error):
         if error is None:
             handle.start_read(self.tcp_recv)
+            self.connected = True
             
             # Establish connection to server and grab initial data
             self.tcp.write(msgpack.packb(["hey"]) + "\n")
@@ -308,11 +308,14 @@ class Networking():
 
     def rpc(self, fname, *args):
         """ Need to make sure args only contains vars msgpack can pack for transmission """
-        self.tcp.write(msgpack.packb(("rpc", fname, args)) + "\n")
+        if self.connected:
+            self.tcp.write(msgpack.packb(("rpc", fname, args)) + "\n")
+        else:
+            print("Can't use rpc while not connected")
 
 
     def send_synced(self):
-        """ Pack and send data (Position/Rotation/Scale/ActiveState) from network synchronized nodes 
+        """ Pack and send data (Position/Rotation/Scale/ActiveState) from network synchronized nodes
             This uses data from nodes in self.synchronized.
             Only data that has changed since last send will be transmitted.
             Sends data from up to 10 nodes in a single UDP packet for best speed/compatability.
@@ -365,8 +368,8 @@ class Networking():
         # Send data packs in chunks of 10. This results in a packet of roughly 350 bytes,
         # which should not be fragmented or otherwise delayed on the wire.
         # These data chucks are not well compressible, so no additional compression is used
-        # TODO: Quite some useless slicing and packing in here. Measure execution time / optimize? (50 nodes position ~0.3ms)
-        before = timeit.default_timer()
+        # TODO: Quite some useless slicing and packing in here. Measure execution time / optimize?
+        # (50 nodes position ~0.3ms)
         for i in range(0, max(len(pos_packs), len(rot_packs), len(scale_packs), len(state_packs)), 10):
             pospack = ("pos", pos_packs[i:i+10])
             rotpack = ("rot", rot_packs[i:i+10])
