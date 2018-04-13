@@ -70,8 +70,9 @@ You can use remote procedure calls, short `rpc` to execute methods on other node
 ```python
 
 # This will call the method "my_method" with arguments 1 and "two" on all OTHER machines
+# Will NOT call "my_method" on this machine!
 net = Networking()
-net.rcp("my_method", 1, "two")
+net.rpc("my_method", 1, "two")
 
 def my_method(arg1, arg2):
     print arg1, arg2
@@ -80,7 +81,7 @@ def my_method(arg1, arg2):
 
 ### Configuration
 
-Networking will try to read the file `Networking.cfg` at `~/Autodesk/` plus any file you supply to the `config_file` networking costructor parameter (also in the autodesk folder). Values from this per file config will override global values from `Networking.cfg`. Possible values:
+Networking will try to read the file `Networking.cfg` at `~/Autodesk/` plus any file you supply to the `config_file` networking costructor parameter (also in the autodesk folder). Values from this per file config will override global values from `Networking.cfg`. Example config:
 
 ```
 [Networking]
@@ -91,6 +92,7 @@ spawn = None ; Spawn a camera for this machine on connection
 ```
 
 This file uses Python ConfigParser (https://docs.python.org/2/library/configparser.html) syntx.
+Use this to identify different machines or apply different settings for special machines without modifying the scene.
 
 ## Caveats
 
